@@ -1,0 +1,42 @@
+1. Upload this to the Raspberry Pi
+2. Implement basic Drink maker python script in seperate file
+3. Implemenent Boot up/image recognition authorization script
+4. Add different drinks
+5. Merge two scripts
+
+
+Status: 
+    Unauthorized
+    Waiting for drink order
+    Making ${DRINK}
+    Finished ${DRINK}
+
+
+Drink:
+    None
+    Spritzer
+    Marg
+
+Authorized: = False
+   True/False
+
+
+
+User Authenticates with facial recognition 
+    Status = 'Waiting for drink order'  (Website updates to Authorized)
+    Authorized = True
+
+User selects Drink --> 
+    Drink = Spritzer (Displays Maing Drink)
+    Status = 'Making Drink' --> Device on shadow_update_delta starts making drink and updates states
+
+Drink Finished
+    Status = Finished Drink --> Website Displays drink Finished
+
+After 5 seconds:
+    status = waiting for drink
+    drink = none
+
+
+Website listens for update/accepted
+Device  listens for update/delta
