@@ -8,6 +8,9 @@ import sys
 import threading
 import traceback
 from uuid import uuid4
+import time
+import authenticate_user
+import make_drink
 
 # - Overview -
 # This sample uses the AWS IoT Device Shadow Service to keep a property in
@@ -55,16 +58,34 @@ is_sample_done = threading.Event()
 mqtt_connection = None
 shadow_client = None
 thing_name = ""
-shadow_property = ""
+
+STATE = 0
+UNAUTHED = 'UNAUTHORIZED'
+WAITING  = 'WAITING'
+MAKING   = 'MAKING'
+FINISHED = 'FINISHED'
+
 
 SHADOW_VALUE_DEFAULT = "off"
 
 class LockedData:
     def __init__(self):
         self.lock = threading.Lock()
-        self.shadow_value = None
+
+        self.drink = ''
+        self.status = "UNAUTHED"
+        self.authorized = False
+        self.STATE = 0
+
         self.disconnect_called = False
         self.request_tokens = set()
+
+class State:
+    def __init__(self,d,s,a):
+        self.drink = d
+        self.status = s
+        self.authorized = a
+
 
 locked_data = LockedData()
 
@@ -90,49 +111,54 @@ def on_disconnected(disconnect_future):
     # Signal that sample is finished
     is_sample_done.set()
 
+
+
 #  This is the callback function for whenever a get accepted is published from AWS
 #  get/accepted contains the data response of a get request.
 
-def on_get_shadow_accepted(response):
-    # type: (iotshadow.GetShadowResponse) -> None
-    try:
-        with locked_data.lock:
-            # check that this is a response to a request from this session
-            try:
-                locked_data.request_tokens.remove(response.client_token)
-            except KeyError:
-                print("Ignoring get_shadow_accepted message due to unexpected token.")
-                return
+# NOT NECESSARY
 
-            print("Finished getting initial shadow state.")
-            if locked_data.shadow_value is not None:
-                print("  Ignoring initial query because a delta event has already been received.")
-                return
+# def on_get_shadow_accepted(response):
+#     # type: (iotshadow.GetShadowResponse) -> None
+#     try:
+#         with locked_data.lock:
+#             # check that this is a response to a request from this session
+#             try:
+#                 locked_data.request_tokens.remove(response.client_token)
+#             except KeyError:
+#                 print("Ignoring get_shadow_accepted message due to unexpected token.")
+#                 return
 
-        if response.state:
-            if response.state.delta:
-                value = response.state.delta.get(shadow_property)
-                if value:
-                    print("  Shadow contains delta value '{}'.".format(value))
-                    change_shadow_value(value)
-                    return
+#             print("Finished getting initial shadow state.")
+#             if locked_data.shadow_value is not None:
+#                 print("  Ignoring initial query because a delta event has already been received.")
+#                 return
 
-            if response.state.reported:
-                value = response.state.reported.get(shadow_property)
-                if value:
-                    print("  Shadow contains reported value '{}'.".format(value))
-                    set_local_value_due_to_initial_query(response.state.reported[shadow_property])
-                    return
+#         # TODO UPDATE THIS TO NEW PROPS
+#         if response.state:
+#             if response.state.delta:
+#                 value = response.state.delta.get(shadow_property)
+#                 if value:
+#                     print("  Shadow contains delta value '{}'.".format(value))
+#                     change_shadow_value(value)
+#                     return
 
-        print("  Shadow document lacks '{}' property. Setting defaults...".format(shadow_property))
-        change_shadow_value(SHADOW_VALUE_DEFAULT)
-        return
+#             if response.state.reported:
+#                 value = response.state.reported.get(shadow_property)
+#                 if value:
+#                     print("  Shadow contains reported value '{}'.".format(value))
+#                     set_local_value_due_to_initial_query(response.state.reported[shadow_property])
+#                     return
 
-    except Exception as e:
-        exit(e)
+#         print("  Shadow document lacks '{}' property. Setting defaults...".format(shadow_property))
+#         change_shadow_value(SHADOW_VALUE_DEFAULT)
+#         return
+
+#     except Exception as e:
+#         exit(e)
 
 # Get response when there is an error.
-
+# Terminates program
 def on_get_shadow_rejected(error):
     # type: (iotshadow.ErrorResponse) -> None
     try:
@@ -146,7 +172,8 @@ def on_get_shadow_rejected(error):
 
         if error.code == 404:
             print("Thing has no shadow document. Creating with defaults...")
-            change_shadow_value(SHADOW_VALUE_DEFAULT)
+            default_state = State('',UNAUTHED,False)
+            change_state_values(default_state)
         else:
             exit("Get request was rejected. code:{} message:'{}'".format(
                 error.code, error.message))
@@ -155,25 +182,35 @@ def on_get_shadow_rejected(error):
         exit(e)
 
 
+
+
+# Receives info from website
 # This is the callback function when update is pushed and there is a change between requested and current state
 def on_shadow_delta_updated(delta):
     # type: (iotshadow.ShadowDeltaUpdatedEvent) -> None
+    if  not locked_data.authorized:
+        print("Not Authorized to user the bar.")
+        return
+
+    if locked_data.STATE != WAITING:
+        print("Bar received update while it was making drink. Update Ignored.")
+        return
+
+
     try:
         print("Received shadow delta event.")
-        if delta.state and (shadow_property in delta.state):
-            value = delta.state[shadow_property]
-            if value is None:
-                print("  Delta reports that '{}' was deleted. Resetting defaults...".format(shadow_property))
-                change_shadow_value(SHADOW_VALUE_DEFAULT)
-                return
-            else:
-                print("  Delta reports that desired value is '{}'. Changing local value...".format(value))
-                change_shadow_value(value)
-        else:
-            print("  Delta did not report a change in '{}'".format(shadow_property))
+
+        if delta.state.drink != '' and locked_data.drink == '': 
+            new_state = State(delta.state.drink,MAKING,locked_data.authorized)
+            change_state_values(new_state)
+            
 
     except Exception as e:
         exit(e)
+
+
+
+
 
 # I dont really know what future.result() is
 def on_publish_update_shadow(future):
@@ -185,27 +222,23 @@ def on_publish_update_shadow(future):
         print("Failed to publish update request.")
         exit(e)
 
-# Response when shadow is updated (not sure if it triggers with delta as well)
-def on_update_shadow_accepted(response):
-    # type: (iotshadow.UpdateShadowResponse) -> None
-    try:
-        # check that this is a response to a request from this session
-        with locked_data.lock:
-            try:
-                locked_data.request_tokens.remove(response.client_token)
-            except KeyError:
-                print("Ignoring update_shadow_accepted message due to unexpected token.")
-                return
+# # Response when shadow is updated (not sure if it triggers with delta as well)
+# def on_update_shadow_accepted(response):
+#     # type: (iotshadow.UpdateShadowResponse) -> None
+#     try:
+#         # check that this is a response to a request from this session
+#         with locked_data.lock:
+#             try:
+#                 locked_data.request_tokens.remove(response.client_token)
+#             except KeyError:
+#                 print("Ignoring update_shadow_accepted message due to unexpected token.")
+#                 return
+#         print("Finished updating reported shadow value." ) # type: ignore
 
-        try:
-            print("Finished updating reported shadow value to '{}'.".format(response.state.reported[shadow_property])) # type: ignore
-            print("Enter desired value: ") # remind user they can input new values
-        except:
-            exit("Updated shadow is missing the target property.")
+#     except Exception as e:
+#         exit(e)
 
-    except Exception as e:
-        exit(e)
-
+# Error --> terminate programs
 def on_update_shadow_rejected(error):
     # type: (iotshadow.ErrorResponse) -> None
     try:
@@ -224,29 +257,23 @@ def on_update_shadow_rejected(error):
         exit(e)
 
 
-
-
-
+#  UPDATE THIS TO NEW PROPS
 def set_local_value_due_to_initial_query(reported_value):
     with locked_data.lock:
         locked_data.shadow_value = reported_value
-    print("Enter desired value: ") # remind user they can input new values
 
 
 
-# THis functions updates the value on the device and then lets AWS know.
-
-def change_shadow_value(value):
+# This functions updates the value of authorization on the device and then lets AWS know.
+def change_authorization_value(auth):
     with locked_data.lock:
-        if locked_data.shadow_value == value:
-            print("Local value is already '{}'.".format(value))
-            print("Enter desired value: ") # remind user they can input new values
+        if locked_data.authorized == auth:
+            print("User is already authenticated")
             return
 
-        print("Changed local shadow value to '{}'.".format(value))
-        locked_data.shadow_value = value
-
-        print("Updating reported shadow value to '{}'...".format(value))
+        print("Changed local shadow value to '{}'.".format(auth))
+        locked_data.authorized = auth
+        print("Updating reported shadow value to '{}'...".format(auth))
 
         # use a unique token so we can correlate this "request" message to
         # any "response" messages received on the /accepted and /rejected topics
@@ -255,18 +282,98 @@ def change_shadow_value(value):
         request = iotshadow.UpdateShadowRequest(
             thing_name=thing_name,
             state=iotshadow.ShadowState(
-                reported={ shadow_property: value },
-                desired={ shadow_property: value },
+                reported={ "drink": locked_data.drink, "auth": auth, "status": locked_data.status },
+                desired={ "drink": locked_data.drink, "auth": auth, "status": locked_data.status },
             ),
             client_token=token,
         )
         future = shadow_client.publish_update_shadow(request, mqtt.QoS.AT_LEAST_ONCE)
-
         locked_data.request_tokens.add(token)
-
         future.add_done_callback(on_publish_update_shadow)
 
+# This functions updates the status on the device and then lets AWS know.
+def change_status_value(status):
+    with locked_data.lock:
+        if locked_data.status == status:
+            print("Device is already on status: '{}.".format(status))
+            return
 
+        print("Changed local shadow status to '{}'.".format(status))
+        locked_data.status = status
+        print("Updating reported shadow status to '{}'...".format(status))
+
+        # use a unique token so we can correlate this "request" message to
+        # any "response" messages received on the /accepted and /rejected topics
+        token = str(uuid4())
+
+        request = iotshadow.UpdateShadowRequest(
+            thing_name=thing_name,
+            state=iotshadow.ShadowState(
+                reported={ "drink": locked_data.drink, "auth": locked_data.authorized, "status": status },
+                desired={ "drink": locked_data.drink, "auth": locked_data.authorized, "status": status },
+            ),
+            client_token=token,
+        )
+        future = shadow_client.publish_update_shadow(request, mqtt.QoS.AT_LEAST_ONCE)
+        locked_data.request_tokens.add(token)
+        future.add_done_callback(on_publish_update_shadow)
+
+# This functions updates the status on the device and then lets AWS know.
+def change_drink_value(drink):
+    with locked_data.lock:
+        if locked_data.drink == drink:
+            print("Device is already on that drink: '{}.".format(drink))
+            return
+
+        print("Changed local shadow status to '{}'.".format(drink))
+        locked_data.drink = drink
+        print("Updating reported shadow status to '{}'...".format(drink))
+
+        # use a unique token so we can correlate this "request" message to
+        # any "response" messages received on the /accepted and /rejected topics
+        token = str(uuid4())
+
+        request = iotshadow.UpdateShadowRequest(
+            thing_name=thing_name,
+            state=iotshadow.ShadowState(
+                reported={ "drink": drink, "auth": locked_data.authorized, "status": locked_data.status },
+                desired={  "drink": drink, "auth": locked_data.authorized, "status": locked_data.status },
+            ),
+            client_token=token,
+        )
+        future = shadow_client.publish_update_shadow(request, mqtt.QoS.AT_LEAST_ONCE)
+        locked_data.request_tokens.add(token)
+        future.add_done_callback(on_publish_update_shadow)
+
+def change_state_values(state: State):
+    with locked_data.lock:
+        if locked_data.drink == state.drink and locked_data.authorized == state.authorized and locked_data.status == state.status:
+            print("Device is already on set.")
+            return
+
+        print("Changed local shadow status.")
+
+        locked_data.drink = state.drink
+        locked_data.authorized = state.authorized
+        locked_data.status = state.status
+
+        print("Updating reported shadow status on AWS ")
+
+        # use a unique token so we can correlate this "request" message to
+        # any "response" messages received on the /accepted and /rejected topics
+        token = str(uuid4()) 
+
+        request = iotshadow.UpdateShadowRequest(
+            thing_name=thing_name,
+            state=iotshadow.ShadowState(
+                reported={ "drink": locked_data.drink, "auth": locked_data.authorized, "status": locked_data.status },
+                desired={  "drink": locked_data.drink, "auth": locked_data.authorized, "status": locked_data.status },
+            ),
+            client_token=token,
+        )
+        future = shadow_client.publish_update_shadow(request, mqtt.QoS.AT_LEAST_ONCE)
+        locked_data.request_tokens.add(token)
+        future.add_done_callback(on_publish_update_shadow)
 
 
 
@@ -277,23 +384,30 @@ def change_shadow_value(value):
 
 
 def user_input_thread_fn():
-    while True:
-        try:
-            # Read user input
-            new_value = input()
 
-            # If user wants to quit sample, then quit.
-            # Otherwise change the shadow value.
-            if new_value in ['exit', 'quit']:
-                exit("User has quit")
-                break
+    locked_data.drink = ''
+    locked_data.status = "UNAUTHED"
+    locked_data.authorized = False
+    
+    try:
+        # Callbacks baby
+        while(1):
+            if locked_data.STATE == UNAUTHED:
+                authenticate_user()
+            elif locked_data.STATE == WAITING:
+                continue
+            elif locked_data.STATE == MAKING:
+                make_drink()
+            elif locked_data.STATE == FINISHED:
+                time.sleep(5)
+                change_status_value(WAITING)
             else:
-                change_shadow_value(new_value)
-
-        except Exception as e:
-            print("Exception on input thread.")
-            exit(e)
-            break
+                default_state = State('',UNAUTHED,False)
+                change_state_values(default_state)
+    except Exception as e:
+        print("Exception on input thread.")
+        exit(e)
+        
 
 
 
@@ -367,10 +481,12 @@ if __name__ == '__main__':
         # Note that is **is** important to wait for "accepted/rejected" subscriptions
         # to succeed before publishing the corresponding "request".
         print("Subscribing to Update responses...")
-        update_accepted_subscribed_future, _ = shadow_client.subscribe_to_update_shadow_accepted(
-            request=iotshadow.UpdateShadowSubscriptionRequest(thing_name=args.thing_name),
-            qos=mqtt.QoS.AT_LEAST_ONCE,
-            callback=on_update_shadow_accepted)
+        # update_accepted_subscribed_future, _ = shadow_client.subscribe_to_update_shadow_accepted(
+        #     request=iotshadow.UpdateShadowSubscriptionRequest(thing_name=args.thing_name),
+        #     qos=mqtt.QoS.AT_LEAST_ONCE,
+        #     callback=on_update_shadow_accepted)
+
+        # update_accepted_subscribed_future.result()
 
         update_rejected_subscribed_future, _ = shadow_client.subscribe_to_update_shadow_rejected(
             request=iotshadow.UpdateShadowSubscriptionRequest(thing_name=args.thing_name),
@@ -378,14 +494,17 @@ if __name__ == '__main__':
             callback=on_update_shadow_rejected)
 
         # Wait for subscriptions to succeed
-        update_accepted_subscribed_future.result()
+        
         update_rejected_subscribed_future.result()
 
         print("Subscribing to Get responses...")
-        get_accepted_subscribed_future, _ = shadow_client.subscribe_to_get_shadow_accepted(
-            request=iotshadow.GetShadowSubscriptionRequest(thing_name=args.thing_name),
-            qos=mqtt.QoS.AT_LEAST_ONCE,
-            callback=on_get_shadow_accepted)
+        # get_accepted_subscribed_future, _ = shadow_client.subscribe_to_get_shadow_accepted(
+        #     request=iotshadow.GetShadowSubscriptionRequest(thing_name=args.thing_name),
+        #     qos=mqtt.QoS.AT_LEAST_ONCE,
+        #     callback=on_get_shadow_accepted)
+
+        # get_accepted_subscribed_future.result()
+
 
         get_rejected_subscribed_future, _ = shadow_client.subscribe_to_get_shadow_rejected(
             request=iotshadow.GetShadowSubscriptionRequest(thing_name=args.thing_name),
@@ -393,7 +512,6 @@ if __name__ == '__main__':
             callback=on_get_shadow_rejected)
 
         # Wait for subscriptions to succeed
-        get_accepted_subscribed_future.result()
         get_rejected_subscribed_future.result()
 
         print("Subscribing to Delta events...")
@@ -407,23 +525,26 @@ if __name__ == '__main__':
 
         # The rest of the sample runs asynchronously.
 
-        # Issue request for shadow's current state.
-        # The response will be received by the on_get_accepted() callback
-        print("Requesting current shadow state...")
 
-        with locked_data.lock:
-            # use a unique token so we can correlate this "request" message to
-            # any "response" messages received on the /accepted and /rejected topics
-            token = str(uuid4())
 
-            publish_get_future = shadow_client.publish_get_shadow(
-                request=iotshadow.GetShadowRequest(thing_name=args.thing_name, client_token=token),
-                qos=mqtt.QoS.AT_LEAST_ONCE)
+        # TODO Instead of getting state, send current state on boot up
+        # # Issue request for shadow's current state.
+        # # The response will be received by the on_get_accepted() callback
+        # print("Requesting current shadow state...")
 
-            locked_data.request_tokens.add(token)
+        # with locked_data.lock:
+        #     # use a unique token so we can correlate this "request" message to
+        #     # any "response" messages received on the /accepted and /rejected topics
+        #     token = str(uuid4())
 
-        # Ensure that publish succeeds
-        publish_get_future.result()
+        #     publish_get_future = shadow_client.publish_get_shadow(
+        #         request=iotshadow.GetShadowRequest(thing_name=args.thing_name, client_token=token),
+        #         qos=mqtt.QoS.AT_LEAST_ONCE)
+
+        #     locked_data.request_tokens.add(token)
+
+        # # Ensure that publish succeeds
+        # publish_get_future.result()
 
         # Launch thread to handle user input.
         # A "daemon" thread won't prevent the program from shutting down.
@@ -438,4 +559,9 @@ if __name__ == '__main__':
     # Wait for the sample to finish (user types 'quit', or an error occurs)
     is_sample_done.wait()
 
+# Website can only send desired drink updates
+# Device sends reported Status, Drink, Auth updates
 
+# TODO make drink maker function
+    #  once drink is made and it goes from finishing to waiting, set drink to None
+# TODO implement user authentication
