@@ -398,6 +398,7 @@ def user_input_thread_fn():
                 continue
             elif locked_data.STATE == MAKING:
                 make_drink()
+                change_status_value(FINISHED)
             elif locked_data.STATE == FINISHED:
                 time.sleep(5)
                 change_status_value(WAITING)

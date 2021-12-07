@@ -23,3 +23,15 @@ def make_drink_spritzer():
     # Update status and push to AWS
 
     print("Finished Drink")
+
+
+def make_drink(drink):
+
+    if drink == "Spritzer":
+        make_drink_spritzer()
+    elif drink == "Coke":
+        make_drink_coke()
+    elif drink == "Coke":
+        make_drink_coke()        
+    else:
+        make_drink_coke()
