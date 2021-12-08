@@ -568,9 +568,10 @@ if __name__ == '__main__':
         # user_auth = Authorizer()
 
         print("Launching thread to read user input...")
-        user_input_thread = threading.Thread(target=user_input_thread_fn, name='user_input_thread')
-        user_input_thread.daemon = True
-        user_input_thread.start()
+        #user_input_thread = threading.Thread(target=user_input_thread_fn, name='user_input_thread')
+        #user_input_thread.daemon = True
+        #user_input_thread.start()
+        user_input_thread_fn()
 
     except Exception as e:
         exit(e)
