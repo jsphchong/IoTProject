@@ -44,10 +44,10 @@ def make_drink_spritzer():
     print("Finished Drink")
 
 
-while(c < 5):
-    make_drink_spritzer()
-    c+=1
+#while(c < 5):
+ #   make_drink_spritzer()
+  #  c+=1
     
 
 
-print("OFF")
+#print("OFF")

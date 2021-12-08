@@ -9,9 +9,8 @@ import threading
 import traceback
 from uuid import uuid4
 import time
-import authenticate_user
-import make_drink
-import authorization
+from make_drink_test import make_drink_spritzer
+# from authorization import Authorizer 
 
 # - Overview -
 # This sample uses the AWS IoT Device Shadow Service to keep a property in
@@ -193,15 +192,17 @@ def on_shadow_delta_updated(delta):
         print("Not Authorized to user the bar.")
         return
 
-    if locked_data.STATE != WAITING:
+    if locked_data.status != WAITING:
         print("Bar received update while it was making drink. Update Ignored.")
         return
 
 
     try:
         print("Received shadow delta event.")
-
-        if delta.state.drink != '' and locked_data.drink == '': 
+        with locked_data.lock:
+            a = delta.state['drink']
+        print(a)
+        if delta.state['drink'] != '' and locked_data.drink == '': 
             new_state = State(delta.state.drink,MAKING,locked_data.authorized)
             change_state_values(new_state)
             
@@ -268,7 +269,7 @@ def set_local_value_due_to_initial_query(reported_value):
 # This functions updates the value of authorization on the device and then lets AWS know.
 def change_authorization_value(auth):
     with locked_data.lock:
-        if locked_data.authorized == auth:
+        if locked_data.authorized:
             print("User is already authenticated")
             return
 
@@ -279,6 +280,8 @@ def change_authorization_value(auth):
         # use a unique token so we can correlate this "request" message to
         # any "response" messages received on the /accepted and /rejected topics
         token = str(uuid4())
+        if locked_data.authorized:
+            locked_data.status = WAITING
 
         request = iotshadow.UpdateShadowRequest(
             thing_name=thing_name,
@@ -393,17 +396,27 @@ def user_input_thread_fn():
     try:
         # Callbacks baby
         while(1):
-            if locked_data.STATE == UNAUTHED:
-                user_auth.search_and_authorize_user()
-            elif locked_data.STATE == WAITING:
+            if locked_data.status == UNAUTHED:
+                # user_auth.search_and_authorize_user()
+                print('UNAUTHED')
+                change_authorization_value(True)
+                if (locked_data.authorized):
+                    print("AUTHORIZED")
+                    locked_data.status = WAITING
+            elif locked_data.status == WAITING:
+                print('WAITING')
                 continue
-            elif locked_data.STATE == MAKING:
-                make_drink()
+            elif locked_data.status == MAKING:
+                make_drink_spritzer()
+                print(locked_data.drink)
                 change_status_value(FINISHED)
-            elif locked_data.STATE == FINISHED:
+                print('MAKING')
+            elif locked_data.status == FINISHED:
                 time.sleep(5)
                 change_status_value(WAITING)
+                print('FINISHED')
             else:
+                print('IN ELSE STATEMENT: ', locked_data.status)
                 default_state = State('',UNAUTHED,False)
                 change_state_values(default_state)
     except Exception as e:
@@ -552,7 +565,7 @@ if __name__ == '__main__':
         # A "daemon" thread won't prevent the program from shutting down.
 
         print('Booting up Authorizer')
-        user_auth = Authorizer()
+        # user_auth = Authorizer()
 
         print("Launching thread to read user input...")
         user_input_thread = threading.Thread(target=user_input_thread_fn, name='user_input_thread')

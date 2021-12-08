@@ -37,11 +37,11 @@ userFound = False
 class Authorizer:
     def __init__(self):
         print("Loading known face image(s)")
-        self.preston_image = face_recognition.load_image_file("preston.jpg")
-        self.preston_face_encoding = face_recognition.face_encodings(preston_image)[0]
+        self.preston_image = face_recognition.load_image_file("examples/preston.jpg")
+        self.preston_face_encoding = face_recognition.face_encodings(self.preston_image)[0]
         print("preston done")
-        self.joseph_image = face_recognition.load_image_file("joseph.jpg")
-        self.joseph_face_encoding = face_recognition.face_encodings(joseph_image)[0]
+        self.joseph_image = face_recognition.load_image_file("examples/joseph.jpg")
+        self.joseph_face_encoding = face_recognition.face_encodings(self.joseph_image)[0]
         print("joseph done")
 
 
