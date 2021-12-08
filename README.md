@@ -1,3 +1,2 @@
 # IoTProject
-shadow.py --root-ca ~/certs/Amazon-root-CA-1.pem --cert ~/certs/device.pem.crt --key ~/certs/private.pem.key --endpoint a1fs6jiodvpd9q-a
-ts.iot.us-east-2.amazonaws.com  --thing-name MyIotThing
+python3 shadow.py --root-ca /awsKeysforThing/Amazon-root-CA-1.pem --cert /awsKeysforThing/device.pem.crt --key /awsKeysforThing/private.pem.key --endpoint a1fs6jiodvpd9q-ats.iot.us-east-2.amazonaws.com  --thing-name RaspberryPi
