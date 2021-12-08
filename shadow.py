@@ -11,6 +11,7 @@ from uuid import uuid4
 import time
 import authenticate_user
 import make_drink
+import authorization
 
 # - Overview -
 # This sample uses the AWS IoT Device Shadow Service to keep a property in
@@ -393,7 +394,7 @@ def user_input_thread_fn():
         # Callbacks baby
         while(1):
             if locked_data.STATE == UNAUTHED:
-                authenticate_user()
+                user_auth.search_and_authorize_user()
             elif locked_data.STATE == WAITING:
                 continue
             elif locked_data.STATE == MAKING:
@@ -549,6 +550,10 @@ if __name__ == '__main__':
 
         # Launch thread to handle user input.
         # A "daemon" thread won't prevent the program from shutting down.
+
+        print('Booting up Authorizer')
+        user_auth = Authorizer()
+
         print("Launching thread to read user input...")
         user_input_thread = threading.Thread(target=user_input_thread_fn, name='user_input_thread')
         user_input_thread.daemon = True
